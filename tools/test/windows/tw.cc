@@ -190,6 +190,9 @@ struct Duration {
   bool FromString(const wchar_t* str);
 };
 
+bool OpenExistingFileForRead(const Path& abs_path,
+                             bazel::windows::AutoHandle* opt_result);
+
 void WriteStdout(const std::string& s) {
   DWORD written;
   WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), s.c_str(), s.size(), &written,
@@ -524,7 +527,8 @@ bool ExportRunfiles(const Path& cwd, const Path& test_srcdir) {
     // manifest file to find their runfiles.
     Path runfiles_mf;
     if (!runfiles_mf.Set(test_srcdir.Get() + L"\\MANIFEST") ||
-        !SetPathEnv(L"RUNFILES_MANIFEST_FILE", runfiles_mf)) {
+        (OpenExistingFileForRead(runfiles_mf, nullptr) &&
+         !SetPathEnv(L"RUNFILES_MANIFEST_FILE", runfiles_mf))) {
       return false;
     }
   }
@@ -737,7 +741,7 @@ bool OpenFileForWriting(const Path& path, bazel::windows::AutoHandle* result) {
 }
 
 bool OpenExistingFileForRead(const Path& abs_path,
-                             bazel::windows::AutoHandle* result) {
+                             bazel::windows::AutoHandle* opt_result) {
   HANDLE h = CreateFileW(AddUncPrefixMaybe(abs_path).c_str(), GENERIC_READ,
                          FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                          NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -747,7 +751,9 @@ bool OpenExistingFileForRead(const Path& abs_path,
                             err);
     return false;
   }
-  *result = h;
+  if (opt_result) {
+    *opt_result = h;
+  }
   return true;
 }
 

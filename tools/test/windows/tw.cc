@@ -753,6 +753,8 @@ bool OpenExistingFileForRead(const Path& abs_path,
   }
   if (opt_result) {
     *opt_result = h;
+  } else {
+    CloseHandle(h);
   }
   return true;
 }

@@ -159,7 +159,7 @@ class Path {
   Path() {}
   Path(const Path& other) : path_(other.path_) {}
   Path(Path&& other) : path_(std::move(other.path_)) {}
-  Path& operator=(const Path& other) = delete;
+  Path& operator=(const Path& other) = default;
   const std::wstring& Get() const { return path_; }
   bool Set(const std::wstring& path);
 
@@ -169,6 +169,7 @@ class Path {
   bool Absolutize(const Path& cwd);
 
   Path Dirname() const;
+  bool Join(const Path& other, Path* result) const;
 
  private:
   std::wstring path_;
@@ -189,6 +190,8 @@ struct Duration {
 
   bool FromString(const wchar_t* str);
 };
+
+inline bool GetWorkspaceName(std::wstring* result);
 
 void WriteStdout(const std::string& s) {
   DWORD written;
@@ -319,6 +322,17 @@ std::wstring AsMixedPath(const std::wstring& path) {
   return value;
 }
 
+bool IsReadableFile(const Path& p) {
+  HANDLE h = CreateFileW(AddUncPrefixMaybe(p).c_str(), GENERIC_READ,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (h == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  CloseHandle(h);
+  return true;
+}
+
 // Gets an environment variable's value.
 // Returns:
 // - true, if the envvar is defined and successfully fetched, or it's empty or
@@ -416,6 +430,52 @@ bool GetCwd(Path* result) {
   }
 }
 
+bool ChdirToRunfiles(const Path& test_srcdir, const Path& exec_root) {
+  Path dir = test_srcdir;
+  LogErrorWithArg(__LINE__, "DEBUG: 0", dir.Get());
+  std::wstring preserve_cwd;
+  if (GetEnv(L"RUNTEST_PRESERVE_CWD", &preserve_cwd) && preserve_cwd == L"1") {
+    dir = exec_root;
+    LogErrorWithArg(__LINE__, "DEBUG: 1", exec_root.Get());
+  } else {
+    std::wstring workspace;
+    if (GetWorkspaceName(&workspace)) {
+      Path ws;
+      if (!ws.Set(workspace)) {
+        LogErrorWithArg(__LINE__, "Could not Set path", workspace);
+        return false;
+      }
+
+      Path joined;
+      if (!dir.Join(ws, &joined)) {
+        LogErrorWithArg2(__LINE__, "Could not join paths", dir.Get(),
+                         workspace);
+        return false;
+      }
+
+      dir = joined;
+      LogErrorWithArg(__LINE__, "DEBUG: 2", joined.Get());
+    }
+  }
+
+  dir.Absolutize(exec_root);
+  LogErrorWithArg(__LINE__, "DEBUG: 3", dir.Get());
+
+  // Non-sandboxed commands run in the exec_root, where they have access to
+  // the entire source tree. By chdir'ing to the runfiles root, tests only
+  // have direct access to their runfiles tree (if it exists), i.e. their
+  // declared dependencies.
+  std::wstring coverage_dir;
+  if (!GetEnv(L"COVERAGE_DIR", &coverage_dir) || coverage_dir.empty()) {
+    if (!SetCurrentDirectoryW(dir.Get().c_str())) {
+      DWORD err = GetLastError();
+      LogErrorWithArgAndValue(__LINE__, "Could not chdir", dir.Get(), err);
+      return false;
+    }
+  }
+  return true;
+}
+
 // Set USER as required by the Bazel Test Encyclopedia.
 bool ExportUserName() {
   std::wstring value;
@@ -496,17 +556,6 @@ bool ExportHome(const Path& test_tmpdir) {
   }
 }
 
-bool FileExists(const Path& p) {
-  HANDLE h = CreateFileW(AddUncPrefixMaybe(p).c_str(), GENERIC_READ,
-                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                         NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-  if (h == INVALID_HANDLE_VALUE) {
-    return false;
-  }
-  CloseHandle(h);
-  return true;
-}
-
 bool ExportRunfiles(const Path& cwd, const Path& test_srcdir) {
   Path runfiles_dir;
   if (!GetPathEnv(L"RUNFILES_DIR", &runfiles_dir) ||
@@ -535,7 +584,7 @@ bool ExportRunfiles(const Path& cwd, const Path& test_srcdir) {
     // manifest file to find their runfiles.
     Path runfiles_mf;
     if (!runfiles_mf.Set(test_srcdir.Get() + L"\\MANIFEST") ||
-        (FileExists(runfiles_mf) &&
+        (IsReadableFile(runfiles_mf) &&
          !SetPathEnv(L"RUNFILES_MANIFEST_FILE", runfiles_mf))) {
       return false;
     }
@@ -1727,6 +1776,19 @@ Path Path::Dirname() const {
   return result;
 }
 
+bool Path::Join(const Path& o, Path* result) const {
+  if (o.path_.empty()) {
+    *result = *this;
+    return true;
+  }
+  if (path_.empty() || blaze_util::IsAbsolute(o.Get())) {
+    *result = o;
+    return true;
+  }
+  // TODO: test this
+  return result->Set(path_ + L"\\" + o.Get());
+}
+
 IFStream* IFStreamImpl::Create(HANDLE handle, DWORD page_size) {
   std::unique_ptr<uint8_t[]> data(new uint8_t[page_size * 2]);
   DWORD read;
@@ -1864,6 +1926,7 @@ int TestWrapperMain(int argc, wchar_t** argv) {
       !PrintTestLogStartMarker() || !GetCwd(&exec_root) ||
       !FindTestBinary(argv0, exec_root, test_path_arg, &test_path) ||
       !ExportUserName() || !ExportSrcPath(exec_root, &srcdir) ||
+      !ChdirToRunfiles(srcdir, exec_root) ||
       !ExportTmpPath(exec_root, &tmpdir) || !ExportHome(tmpdir) ||
       !ExportRunfiles(exec_root, srcdir) || !ExportShardStatusFile(exec_root) ||
       !ExportGtestVariables(tmpdir) || !ExportMiscEnvvars(exec_root) ||

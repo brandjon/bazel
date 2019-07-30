@@ -190,9 +190,6 @@ struct Duration {
   bool FromString(const wchar_t* str);
 };
 
-bool OpenExistingFileForRead(const Path& abs_path,
-                             bazel::windows::AutoHandle* opt_result);
-
 void WriteStdout(const std::string& s) {
   DWORD written;
   WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), s.c_str(), s.size(), &written,
@@ -499,6 +496,17 @@ bool ExportHome(const Path& test_tmpdir) {
   }
 }
 
+bool FileExists(const Path& p) {
+  HANDLE h = CreateFileW(AddUncPrefixMaybe(p).c_str(), GENERIC_READ,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (h == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  CloseHandle(h);
+  return true;
+}
+
 bool ExportRunfiles(const Path& cwd, const Path& test_srcdir) {
   Path runfiles_dir;
   if (!GetPathEnv(L"RUNFILES_DIR", &runfiles_dir) ||
@@ -527,7 +535,7 @@ bool ExportRunfiles(const Path& cwd, const Path& test_srcdir) {
     // manifest file to find their runfiles.
     Path runfiles_mf;
     if (!runfiles_mf.Set(test_srcdir.Get() + L"\\MANIFEST") ||
-        (OpenExistingFileForRead(runfiles_mf, nullptr) &&
+        (FileExists(runfiles_mf) &&
          !SetPathEnv(L"RUNFILES_MANIFEST_FILE", runfiles_mf))) {
       return false;
     }
@@ -741,7 +749,7 @@ bool OpenFileForWriting(const Path& path, bazel::windows::AutoHandle* result) {
 }
 
 bool OpenExistingFileForRead(const Path& abs_path,
-                             bazel::windows::AutoHandle* opt_result) {
+                             bazel::windows::AutoHandle* result) {
   HANDLE h = CreateFileW(AddUncPrefixMaybe(abs_path).c_str(), GENERIC_READ,
                          FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                          NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -751,11 +759,7 @@ bool OpenExistingFileForRead(const Path& abs_path,
                             err);
     return false;
   }
-  if (opt_result) {
-    *opt_result = h;
-  } else {
-    CloseHandle(h);
-  }
+  *result = h;
   return true;
 }
 
